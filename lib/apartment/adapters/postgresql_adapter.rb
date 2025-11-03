@@ -85,7 +85,9 @@ module Apartment
       def tenant_exists?(tenant)
         return true unless Apartment.tenant_presence_check
 
-        Apartment.connection.schema_exists?(tenant)
+        with_neutral_connection(tenant) do |conn|
+          conn.schema_exists?(tenant)
+        end
       end
 
       def create_tenant_command(conn, tenant)
