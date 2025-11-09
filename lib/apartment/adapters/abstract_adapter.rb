@@ -178,7 +178,12 @@ module Apartment
       def connect_to_new(tenant)
         return reset if tenant.nil?
 
-        query_cache_enabled = ActiveRecord::Base.connection.query_cache_enabled
+        query_cache_enabled =
+          if Apartment.connection_class
+            Apartment.connection_class.connection.query_cache_enabled
+          else
+            ActiveRecord::Base.connection.query_cache_enabled
+          end
 
         Apartment.establish_connection multi_tenantify(tenant)
         Apartment.connection.verify! # call active? to manually check if this connection is valid
@@ -194,7 +199,19 @@ module Apartment
       def import_database_schema
         ActiveRecord::Schema.verbose = false # do not log schema load output.
 
-        load_or_raise(Apartment.database_schema_file) if Apartment.database_schema_file
+        # This needs to do what db:schema:load or db:migrate does
+        # Rails iterates over all db_config entries and passes each to with_temporary_connection
+        # so Schema.define's connection_pool is set to one corresponding to the config given to the block
+        db_config = ActiveRecord::Base.configurations.configs_for(name: "shard_one")
+        ActiveRecord::Tasks::DatabaseTasks.with_temporary_connection(db_config) do |conn|
+
+          binding.pry
+          # Now the correct DB is used but the search path does not seem to be set
+          # TODO: Set search_path
+          #
+          # This might be broken because I hacked in a bunch of with_neutral_connection calls
+          load_or_raise(Apartment.database_schema_file) if Apartment.database_schema_file
+        end
       end
 
       #   Return a new config that is multi-tenanted
@@ -244,9 +261,9 @@ module Apartment
           # neutral connection is necessary whenever you need to create/remove a database from a server.
           # example: when you use postgresql, you need to connect to the default postgresql database before you create
           # your own.
-          SeparateDbConnectionHandler.establish_connection(multi_tenantify(tenant, false))
-          yield(SeparateDbConnectionHandler.connection)
-          SeparateDbConnectionHandler.connection.close
+          separate_db_connection_handler.establish_connection(multi_tenantify(tenant, false))
+          yield(separate_db_connection_handler.connection)
+          separate_db_connection_handler.connection.close
         else
           yield(Apartment.connection)
         end
@@ -268,7 +285,19 @@ module Apartment
         raise TenantNotFound, "Error while connecting to tenant #{environmentify(tenant)}: #{exception.message}"
       end
 
-      class SeparateDbConnectionHandler < ::ActiveRecord::Base
+      # This needs to respect connection_class for Rails apps using multiple DBs
+      # or the wrong connection pool could (will) be used
+      def separate_db_connection_handler
+        return SeparateDbConnectionHandler if defined?(SeparateDbConnectionHandler)
+
+        klass =
+          if Apartment.connection_class
+            Class.new(Apartment.connection_class)
+          else
+            Class.new(::ActiveRecord::Base)
+          end
+
+        Object.const_set("SeparateDbConnectionHandler", klass)
       end
     end
   end

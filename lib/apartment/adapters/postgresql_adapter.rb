@@ -75,7 +75,10 @@ module Apartment
         raise ActiveRecord::StatementInvalid, "Could not find schema #{tenant}" unless schema_exists?(tenant)
 
         @current = tenant.is_a?(Array) ? tenant.map(&:to_s) : tenant.to_s
-        Apartment.connection.schema_search_path = full_search_path
+
+        with_neutral_connection(tenant) do |conn|
+          conn.schema_search_path = full_search_path
+        end
       rescue *rescuable_exceptions => e
         raise_schema_connect_to_new(tenant, e)
       end
@@ -85,7 +88,9 @@ module Apartment
       def tenant_exists?(tenant)
         return true unless Apartment.tenant_presence_check
 
-        Apartment.connection.schema_exists?(tenant)
+        with_neutral_connection(tenant) do |conn|
+          conn.schema_exists?(tenant)
+        end
       end
 
       def create_tenant_command(conn, tenant)
@@ -139,6 +144,9 @@ module Apartment
     end
 
     # Another Adapter for Postgresql when using schemas and SQL
+    #
+    # THIS IS A TOTALY DIFFERENT CLASS THATS ONLY USED IF YOU SPECIFY CERTAIN CONFIG OPTIONS
+    # SEE INITIALIZER
     class PostgresqlSchemaFromSqlAdapter < PostgresqlSchemaAdapter
       PSQL_DUMP_BLACKLISTED_STATEMENTS = [
         /SET search_path/i,                           # overridden later
@@ -153,9 +161,10 @@ module Apartment
       ].freeze
 
       def import_database_schema
+        binding.pry
         preserving_search_path do
-          clone_pg_schema
-          copy_schema_migrations
+          clone_pg_schema(conn)
+          copy_schema_migrations(conn)
         end
       end
 
@@ -166,23 +175,27 @@ module Apartment
       # and it mut be reset
       #
       def preserving_search_path
-        search_path = Apartment.connection.execute('show search_path').first['search_path']
-        yield
-        Apartment.connection.execute("set search_path = #{search_path}")
+        with_neutral_connection("acme") do |conn|
+          search_path = conn.execute('show search_path').first['search_path']
+          yield(conn)
+          con.execute("set search_path = #{search_path}")
+        end
       end
 
       # Clone default schema into new schema named after current tenant
       #
-      def clone_pg_schema
+      def clone_pg_schema(conn)
         pg_schema_sql = patch_search_path(pg_dump_schema)
-        Apartment.connection.execute(pg_schema_sql)
+        binding.pry
+        conn.execute(pg_schema_sql)
       end
 
       # Copy data from schema_migrations into new schema
       #
-      def copy_schema_migrations
+      def copy_schema_migrations(conn)
         pg_migrations_data = patch_search_path(pg_dump_schema_migrations_data)
-        Apartment.connection.execute(pg_migrations_data)
+        binding.pry
+        conn.execute(pg_migrations_data)
       end
 
       #   Dump postgres default schema
